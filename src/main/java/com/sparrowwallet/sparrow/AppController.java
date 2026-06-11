@@ -20,6 +20,7 @@ import com.sparrowwallet.sparrow.glyphfont.FontAwesome5;
 import com.sparrowwallet.sparrow.io.*;
 import com.sparrowwallet.sparrow.io.bbqr.BBQR;
 import com.sparrowwallet.sparrow.io.bbqr.BBQRType;
+import com.sparrowwallet.sparrow.io.blossom.BlossomBackup;
 import com.sparrowwallet.sparrow.net.ElectrumServer;
 import com.sparrowwallet.sparrow.net.ServerType;
 import com.sparrowwallet.sparrow.settings.SettingsGroup;
@@ -109,6 +110,9 @@ public class AppController implements Initializable {
 
     @FXML
     private MenuItem exportWallet;
+
+    @FXML
+    private MenuItem blossomBackup;
 
     @FXML
     private MenuItem renameWallet;
@@ -430,6 +434,7 @@ public class AppController implements Initializable {
         exportWallet.setDisable(true);
         renameWallet.disableProperty().bind(exportWallet.disableProperty());
         deleteWallet.disableProperty().bind(exportWallet.disableProperty());
+        blossomBackup.disableProperty().bind(exportWallet.disableProperty());
         closeTab.setDisable(true);
         lockWallet.setDisable(true);
         showWalletSummary.disableProperty().bind(exportWallet.disableProperty());
@@ -1452,6 +1457,91 @@ public class AppController implements Initializable {
             if(wallet.isPresent()) {
                 //Successful export
             }
+        }
+    }
+
+    public void blossomBackup(ActionEvent event) {
+        WalletForm selectedWalletForm = getSelectedWalletForm();
+        if(selectedWalletForm == null) {
+            return;
+        }
+
+        Wallet wallet = selectedWalletForm.getWallet();
+        Wallet masterWallet = wallet.isMasterWallet() ? wallet : wallet.getMasterWallet();
+        if(masterWallet.getKeystores().stream().noneMatch(Keystore::hasSeed)) {
+            showErrorDialog("Cannot create encrypted backup", "An encrypted cloud backup requires a wallet with a BIP39 seed, since the seed words are used to derive the backup encryption key.");
+            return;
+        }
+
+        Wallet copy = masterWallet.copy();
+        if(copy.isEncrypted()) {
+            String walletId = selectedWalletForm.getWalletId();
+            Storage storage = selectedWalletForm.getStorage();
+            WalletPasswordDialog dlg = new WalletPasswordDialog(masterWallet.getName(), WalletPasswordDialog.PasswordRequirement.LOAD);
+            dlg.initOwner(rootStack.getScene().getWindow());
+            Optional<SecureString> password = dlg.showAndWait();
+            if(password.isPresent()) {
+                Storage.KeyDerivationService keyDerivationService = new Storage.KeyDerivationService(storage, password.get(), true);
+                keyDerivationService.setOnSucceeded(workerStateEvent -> {
+                    EventManager.get().post(new StorageEvent(walletId, TimedEvent.Action.END, "Done"));
+                    ECKey encryptionFullKey = keyDerivationService.getValue();
+                    Key key = new Key(encryptionFullKey.getPrivKeyBytes(), storage.getKeyDeriver().getSalt(), EncryptionType.Deriver.ARGON2);
+                    encryptionFullKey.clear();
+                    copy.decrypt(key);
+                    for(Wallet childWallet : copy.getChildWallets()) {
+                        if(!childWallet.isNested()) {
+                            childWallet.decrypt(key);
+                        }
+                    }
+                    key.clear();
+                    doBlossomBackup(copy);
+                });
+                keyDerivationService.setOnFailed(workerStateEvent -> {
+                    EventManager.get().post(new StorageEvent(walletId, TimedEvent.Action.END, "Failed"));
+                    if(keyDerivationService.getException() instanceof InvalidPasswordException) {
+                        Optional<ButtonType> optResponse = showErrorDialog("Invalid Password", "The wallet password was invalid. Try again?", ButtonType.CANCEL, ButtonType.OK);
+                        if(optResponse.isPresent() && optResponse.get().equals(ButtonType.OK)) {
+                            Platform.runLater(() -> blossomBackup(null));
+                        }
+                    } else {
+                        showErrorDialog("Error decrypting wallet", keyDerivationService.getException().getMessage());
+                    }
+                });
+                EventManager.get().post(new StorageEvent(walletId, TimedEvent.Action.START, "Decrypting wallet..."));
+                keyDerivationService.start();
+            }
+        } else {
+            doBlossomBackup(copy);
+        }
+    }
+
+    private void doBlossomBackup(Wallet decryptedWallet) {
+        BlossomBackup.BackupService backupService = new BlossomBackup.BackupService(decryptedWallet);
+        backupService.setOnSucceeded(workerStateEvent -> {
+            BlossomBackup.BlobDescriptor blob = backupService.getValue();
+            showSuccessDialog("Encrypted backup uploaded", "The encrypted wallet backup was uploaded to " + BlossomBackup.SERVER + ".\n\n" +
+                    "It can be recovered on any Sparrow instance using only the wallet's seed words, via Tools → Restore from Cloud Backup.\n\n" +
+                    "Backup identifier (sha256):\n" + blob.sha256());
+        });
+        backupService.setOnFailed(workerStateEvent -> {
+            log.error("Error uploading encrypted backup", backupService.getException());
+            showErrorDialog("Error uploading encrypted backup", backupService.getException().getMessage());
+        });
+        backupService.start();
+    }
+
+    public void blossomRestore(ActionEvent event) {
+        SeedEntryDialog dlg = new SeedEntryDialog("Restore Backup from " + BlossomBackup.SERVER, 12);
+        dlg.initOwner(rootStack.getScene().getWindow());
+        Optional<List<String>> optWords = dlg.showAndWait();
+        if(optWords.isPresent() && !dlg.isGenerated()) {
+            BlossomBackup.RestoreService restoreService = new BlossomBackup.RestoreService(optWords.get());
+            restoreService.setOnSucceeded(workerStateEvent -> addImportedWallet(restoreService.getValue()));
+            restoreService.setOnFailed(workerStateEvent -> {
+                log.error("Error restoring encrypted backup", restoreService.getException());
+                showErrorDialog("Could not restore backup", restoreService.getException().getMessage());
+            });
+            restoreService.start();
         }
     }
 

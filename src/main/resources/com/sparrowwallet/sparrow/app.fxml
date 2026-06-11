@@ -147,6 +147,9 @@
                     <MenuItem fx:id="sendToMany" mnemonicParsing="false" text="Send To Many" onAction="#sendToMany"/>
                     <MenuItem fx:id="sweepPrivateKey" mnemonicParsing="false" text="Sweep Private Key" onAction="#sweepPrivateKey"/>
                     <SeparatorMenuItem />
+                    <MenuItem fx:id="blossomBackup" mnemonicParsing="false" text="Encrypted Cloud Backup..." onAction="#blossomBackup"/>
+                    <MenuItem mnemonicParsing="false" text="Restore from Cloud Backup..." onAction="#blossomRestore"/>
+                    <SeparatorMenuItem />
                     <MenuItem fx:id="showPayNym" mnemonicParsing="false" text="Show PayNym" onAction="#showPayNym"/>
                     <SeparatorMenuItem />
                     <Menu fx:id="switchServer" text="Switch Server"/>
